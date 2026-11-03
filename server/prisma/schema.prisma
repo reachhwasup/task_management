@@ -1,0 +1,428 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Users & Auth
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  googleId     String?  @unique
+  avatarUrl    String?
+  name         String
+  avatarColor  String   @default("#6366f1")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspaceMemberships     WorkspaceMember[]
+  teamMemberships          TeamMember[]
+  projectMemberships       ProjectMember[]
+  createdTasks             Task[]            @relation("TaskCreatedBy")
+  taskAssignments          TaskAssignee[]
+  followedTasks            TaskFollower[]
+  comments                 Comment[]
+  commentMentions          CommentMention[]
+  activities               Activity[]
+  notifications            Notification[]    @relation("NotificationRecipient")
+  triggeredNotifications   Notification[]    @relation("NotificationActor")
+  refreshTokens            RefreshToken[]
+  sentWorkspaceInvites     WorkspaceInvite[] @relation("WorkspaceInviteInviter")
+  receivedWorkspaceInvites WorkspaceInvite[] @relation("WorkspaceInviteInvitee")
+  sentProjectInvites       ProjectInvite[]   @relation("ProjectInviteInviter")
+  receivedProjectInvites   ProjectInvite[]   @relation("ProjectInviteInvitee")
+  sentTeamInvites          TeamInvite[]      @relation("TeamInviteInviter")
+  receivedTeamInvites      TeamInvite[]      @relation("TeamInviteInvitee")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Workspaces & Teams
+// ─────────────────────────────────────────────────────────────
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       WorkspaceMember[]
+  teams         Team[]
+  projects      Project[]
+  tags          Tag[]
+  invites       WorkspaceInvite[]
+  notifications Notification[]
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+// A workspace invite the recipient must accept before becoming a member —
+// invites don't create a WorkspaceMember row directly, so an invited user
+// is never silently added without confirming.
+model WorkspaceInvite {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  invitedUserId String
+  invitedById   String
+  status        InviteStatus @default(PENDING)
+  createdAt     DateTime     @default(now())
+  respondedAt   DateTime?
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedUser   User           @relation("WorkspaceInviteInvitee", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  invitedBy     User           @relation("WorkspaceInviteInviter", fields: [invitedById], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  @@unique([workspaceId, invitedUserId])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  workspaceId String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members   TeamMember[]
+  projects  Project[]
+  invites   TeamInvite[]
+}
+
+// Mirrors WorkspaceInvite/ProjectInvite: joining a team requires the
+// recipient's consent — membership is only created when they accept.
+model TeamInvite {
+  id            String       @id @default(cuid())
+  teamId        String
+  invitedUserId String
+  invitedById   String
+  status        InviteStatus @default(PENDING)
+  createdAt     DateTime     @default(now())
+  respondedAt   DateTime?
+
+  team          Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  invitedUser   User           @relation("TeamInviteInvitee", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  invitedBy     User           @relation("TeamInviteInviter", fields: [invitedById], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  @@unique([teamId, invitedUserId])
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Projects, Sections, Tasks
+// ─────────────────────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  color       String   @default("#6366f1")
+  icon        String?
+  workspaceId String
+  teamId      String?
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team          Team?           @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  members       ProjectMember[]
+  invites       ProjectInvite[]
+  sections      Section[]
+  tasks         Task[]
+  notifications Notification[]
+}
+
+// Mirrors WorkspaceInvite: being added to a project requires the recipient's
+// consent — membership is only created when they accept.
+model ProjectInvite {
+  id            String       @id @default(cuid())
+  projectId     String
+  invitedUserId String
+  invitedById   String
+  status        InviteStatus @default(PENDING)
+  createdAt     DateTime     @default(now())
+  respondedAt   DateTime?
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invitedUser   User           @relation("ProjectInviteInvitee", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  invitedBy     User           @relation("ProjectInviteInviter", fields: [invitedById], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  @@unique([projectId, invitedUserId])
+}
+
+enum ProjectRole {
+  OWNER
+  EDITOR
+}
+
+model ProjectMember {
+  id        String      @id @default(cuid())
+  projectId String
+  userId    String
+  role      ProjectRole @default(EDITOR)
+  createdAt DateTime    @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model Section {
+  id        String   @id @default(cuid())
+  name      String
+  projectId String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   Task[]
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id           String    @id @default(cuid())
+  title        String
+  description  String?
+  projectId    String
+  sectionId    String?
+  parentTaskId String?
+  createdById  String
+  priority     Priority  @default(MEDIUM)
+  completed    Boolean   @default(false)
+  completedAt  DateTime?
+  startDate    DateTime?
+  dueDate      DateTime?
+  order        Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  section       Section?       @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  parentTask    Task?          @relation("SubTasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks      Task[]         @relation("SubTasks")
+  assignees     TaskAssignee[]
+  createdBy     User           @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  followers     TaskFollower[]
+  comments      Comment[]
+  activities    Activity[]
+  tags          TaskTag[]
+  notifications Notification[]
+
+  @@index([projectId])
+  @@index([dueDate])
+}
+
+model TaskAssignee {
+  id        String   @id @default(cuid())
+  taskId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([userId])
+}
+
+model TaskFollower {
+  id     String @id @default(cuid())
+  taskId String
+  userId String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+}
+
+model Tag {
+  id          String @id @default(cuid())
+  name        String
+  color       String @default("#94a3b8")
+  workspaceId String
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     TaskTag[]
+
+  @@unique([workspaceId, name])
+}
+
+model TaskTag {
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Comments & Activity
+// ─────────────────────────────────────────────────────────────
+
+model Comment {
+  id              String   @id @default(cuid())
+  taskId          String
+  userId          String
+  parentCommentId String?
+  content         String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  task          Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentComment Comment?         @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies       Comment[]        @relation("CommentReplies")
+  mentions      CommentMention[]
+}
+
+model CommentMention {
+  id        String @id @default(cuid())
+  commentId String
+  userId    String
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+}
+
+enum ActivityType {
+  TASK_CREATED
+  TASK_COMPLETED
+  TASK_REOPENED
+  TASK_ASSIGNED
+  TASK_UNASSIGNED
+  DUE_DATE_CHANGED
+  PRIORITY_CHANGED
+  SECTION_CHANGED
+  COMMENT_ADDED
+  DESCRIPTION_CHANGED
+  TITLE_CHANGED
+  SUBTASK_ADDED
+  TAG_ADDED
+  TAG_REMOVED
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  taskId    String
+  userId    String
+  type      ActivityType
+  metadata  Json?
+  createdAt DateTime     @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Notifications
+// ─────────────────────────────────────────────────────────────
+
+enum NotificationType {
+  TASK_ASSIGNED
+  COMMENT_ADDED
+  COMMENT_REPLY
+  DUE_SOON
+  MENTIONED
+  TASK_COMPLETED
+  ADDED_TO_PROJECT
+  ADDED_TO_WORKSPACE
+  WORKSPACE_INVITE
+  WORKSPACE_INVITE_ACCEPTED
+  PROJECT_INVITE
+  PROJECT_INVITE_ACCEPTED
+  TEAM_INVITE
+  TEAM_INVITE_ACCEPTED
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  recipientId String
+  actorId     String?
+  type        NotificationType
+  message     String
+  taskId      String?
+  projectId   String?
+  workspaceId     String?
+  inviteId        String?
+  projectInviteId String?
+  teamInviteId    String?
+  read            Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  recipient     User             @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  actor         User?            @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  task          Task?            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  project       Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace     Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invite        WorkspaceInvite? @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+  projectInvite ProjectInvite?   @relation(fields: [projectInviteId], references: [id], onDelete: Cascade)
+  teamInvite    TeamInvite?      @relation(fields: [teamInviteId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, read])
+}
